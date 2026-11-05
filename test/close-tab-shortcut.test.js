@@ -5,16 +5,29 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../closeTabShortcut.js", import.meta.url), "utf8");
 
-function loadShortcut({ tabbed = true, platform = "macOS" } = {}) {
+function loadShortcut({ tabbed = true, platform = "macOS", readyState = "loading" } = {}) {
   let keydown;
+  let load;
+  let timer;
   const messages = [];
   vm.runInNewContext(source, {
+    document: { readyState },
     window: {
-      addEventListener(type, listener, capture) {
+      addEventListener(type, listener, options) {
+        if (type === "load") {
+          assert.equal(options?.once, true);
+          load = listener;
+          return;
+        }
         assert.equal(type, "keydown");
-        assert.equal(capture, true);
+        assert.equal(options, undefined);
         keydown = listener;
       },
+    },
+    setTimeout(callback, delay) {
+      assert.equal(delay, 0);
+      timer = callback;
+      return 1;
     },
     matchMedia(query) {
       assert.equal(query, "(display-mode: tabbed)");
@@ -34,7 +47,20 @@ function loadShortcut({ tabbed = true, platform = "macOS" } = {}) {
     },
     console,
   });
-  return { keydown, messages };
+
+  return {
+    get keydown() {
+      return keydown;
+    },
+    messages,
+    activate() {
+      if (load) load();
+      assert.equal(typeof timer, "function");
+      const callback = timer;
+      timer = undefined;
+      callback();
+    },
+  };
 }
 
 function keyboardEvent(overrides = {}) {
@@ -45,51 +71,79 @@ function keyboardEvent(overrides = {}) {
     ctrlKey: false,
     altKey: false,
     shiftKey: false,
-    preventDefault: () => calls.push("preventDefault"),
+    defaultPrevented: false,
+    preventDefault() {
+      this.defaultPrevented = true;
+      calls.push("preventDefault");
+    },
     stopImmediatePropagation: () => calls.push("stopImmediatePropagation"),
     calls,
     ...overrides,
   };
 }
 
+test("the close-tab handler registers late in the window bubble phase", () => {
+  const shortcut = loadShortcut();
+  assert.equal(shortcut.keydown, undefined);
+
+  shortcut.activate();
+
+  assert.equal(typeof shortcut.keydown, "function");
+});
+
 test("Command+W closes the sender tab in tabbed PWAs on macOS", () => {
-  const { keydown, messages } = loadShortcut();
+  const shortcut = loadShortcut();
+  shortcut.activate();
   const event = keyboardEvent({ metaKey: true });
 
-  keydown(event);
+  shortcut.keydown(event);
 
-  assert.deepEqual(event.calls, ["preventDefault", "stopImmediatePropagation"]);
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].type, "closeCurrentTab");
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
+  assert.equal(shortcut.messages[0].type, "closeCurrentTab");
+});
+
+test("a PWA that already prevented Command+W keeps control of the shortcut", () => {
+  const shortcut = loadShortcut();
+  shortcut.activate();
+  const event = keyboardEvent({ metaKey: true, defaultPrevented: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, []);
+  assert.deepEqual(shortcut.messages, []);
 });
 
 test("Command+Shift+W remains available for closing the whole PWA window", () => {
-  const { keydown, messages } = loadShortcut();
+  const shortcut = loadShortcut();
+  shortcut.activate();
   const event = keyboardEvent({ metaKey: true, shiftKey: true });
 
-  keydown(event);
+  shortcut.keydown(event);
 
   assert.deepEqual(event.calls, []);
-  assert.deepEqual(messages, []);
+  assert.deepEqual(shortcut.messages, []);
 });
 
 test("the shortcut is untouched outside tabbed display mode", () => {
-  const { keydown, messages } = loadShortcut({ tabbed: false });
+  const shortcut = loadShortcut({ tabbed: false });
+  shortcut.activate();
   const event = keyboardEvent({ metaKey: true });
 
-  keydown(event);
+  shortcut.keydown(event);
 
   assert.deepEqual(event.calls, []);
-  assert.deepEqual(messages, []);
+  assert.deepEqual(shortcut.messages, []);
 });
 
 test("Ctrl+W is used as the close-tab shortcut off macOS", () => {
-  const { keydown, messages } = loadShortcut({ platform: "Windows" });
+  const shortcut = loadShortcut({ platform: "Windows" });
+  shortcut.activate();
   const event = keyboardEvent({ ctrlKey: true });
 
-  keydown(event);
+  shortcut.keydown(event);
 
-  assert.deepEqual(event.calls, ["preventDefault", "stopImmediatePropagation"]);
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0].type, "closeCurrentTab");
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
+  assert.equal(shortcut.messages[0].type, "closeCurrentTab");
 });

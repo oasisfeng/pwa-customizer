@@ -1,6 +1,14 @@
 // Chromium maps the close-tab shortcut to Close Window in tabbed PWA app windows.
-// App-window shortcuts can reach web content, so translate it back to closing the sender tab.
-window.addEventListener("keydown", handleCloseTabShortcut, true);
+// Register late in the bubble phase so the PWA gets first chance to claim the shortcut.
+if (document.readyState === "complete") {
+  setTimeout(registerCloseTabShortcut, 0);
+} else {
+  window.addEventListener("load", () => setTimeout(registerCloseTabShortcut, 0), { once: true });
+}
+
+function registerCloseTabShortcut() {
+  window.addEventListener("keydown", handleCloseTabShortcut);
+}
 
 function handleCloseTabShortcut(event) {
   if (!matchMedia("(display-mode: tabbed)").matches) return;
@@ -19,8 +27,10 @@ function handleCloseTabShortcut(event) {
     return;
   }
 
+  // Respect a shortcut handler that ran earlier in the PWA.
+  if (event.defaultPrevented) return;
+
   event.preventDefault();
-  event.stopImmediatePropagation();
   chrome.runtime.sendMessage({ type: "closeCurrentTab" }).catch((error) => {
     console.error("Better PWAs could not close the current tab:", error);
   });
