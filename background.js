@@ -9,7 +9,8 @@ import {
   validateConfiguration,
 } from "./lib/config.js";
 
-const CONTENT_SCRIPT_ID = "better-pwas-managed";
+const MANIFEST_CONTENT_SCRIPT_ID = "better-pwas-managed";
+const CLOSE_TAB_CONTENT_SCRIPT_ID = "better-pwas-close-tab";
 const ENABLED_ICON = "images/icon48.png";
 const DISABLED_ICON = "images/iconDisabled48.png";
 const ENABLED_TEXT = "Better PWAs: replacement manifest active";
@@ -62,6 +63,8 @@ async function handleMessage(message, sender) {
     case "getConfigurationForPage":
       if (!sender.tab?.url) return { ok: false, error: "Page URL is unavailable." };
       return getConfigurationForPage(sender.tab.url, sender.tab.id);
+    case "closeCurrentTab":
+      return closeCurrentTab(sender);
     case "manifestInjected":
       if (sender.tab?.id && sender.tab.url) {
         const configuration = configurationForUrl(await getConfigurations(), sender.tab.url);
@@ -163,6 +166,12 @@ async function replaceConfigurations(configurations) {
   return { ok: true };
 }
 
+async function closeCurrentTab(sender) {
+  if (!sender.tab?.id) return { ok: false, error: "Current tab is unavailable." };
+  await chrome.tabs.remove(sender.tab.id);
+  return { ok: true };
+}
+
 async function getConfigurationForPage(url, tabId) {
   const configuration = configurationForUrl(await getConfigurations(), url);
   if (!configuration) return { ok: true, configuration: null };
@@ -246,15 +255,26 @@ async function reconcile() {
     }
   }
 
-  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [CONTENT_SCRIPT_ID] });
-  if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [CONTENT_SCRIPT_ID] });
+  const contentScriptIds = [MANIFEST_CONTENT_SCRIPT_ID, CLOSE_TAB_CONTENT_SCRIPT_ID];
+  const existing = await chrome.scripting.getRegisteredContentScripts({ ids: contentScriptIds });
+  if (existing.length) {
+    await chrome.scripting.unregisterContentScripts({ ids: existing.map((script) => script.id) });
+  }
   const matches = [...new Set(enabled.flatMap((configuration) => configuration.matchPatterns))];
   if (matches.length) {
     await chrome.scripting.registerContentScripts([
       {
-        id: CONTENT_SCRIPT_ID,
+        id: MANIFEST_CONTENT_SCRIPT_ID,
         js: ["injectManifest.js"],
         matches,
+        persistAcrossSessions: true,
+        runAt: "document_start",
+      },
+      {
+        id: CLOSE_TAB_CONTENT_SCRIPT_ID,
+        js: ["closeTabShortcut.js"],
+        matches,
+        allFrames: true,
         persistAcrossSessions: true,
         runAt: "document_start",
       },
