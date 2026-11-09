@@ -6,28 +6,32 @@ import vm from "node:vm";
 const source = readFileSync(new URL("../closeTabShortcut.js", import.meta.url), "utf8");
 
 function loadShortcut({ tabbed = true, platform = "macOS", readyState = "loading" } = {}) {
-  let keydown;
-  let load;
-  let timer;
+  const listeners = { load: [], keydown: [] };
+  const timers = new Map();
   const messages = [];
-  vm.runInNewContext(source, {
-    document: { readyState },
-    window: {
-      addEventListener(type, listener, options) {
-        if (type === "load") {
-          assert.equal(options?.once, true);
-          load = listener;
-          return;
-        }
-        assert.equal(type, "keydown");
-        assert.equal(options, undefined);
-        keydown = listener;
-      },
+  let nextTimer = 1;
+
+  const document = { readyState };
+  const window = {
+    addEventListener(type, listener, options) {
+      listeners[type].push({ listener, options });
     },
+    removeEventListener(type, listener) {
+      listeners[type] = listeners[type].filter((entry) => entry.listener !== listener);
+    },
+  };
+
+  const context = vm.createContext({
+    document,
+    window,
     setTimeout(callback, delay) {
       assert.equal(delay, 0);
-      timer = callback;
-      return 1;
+      const id = nextTimer++;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
     },
     matchMedia(query) {
       assert.equal(query, "(display-mode: tabbed)");
@@ -48,17 +52,33 @@ function loadShortcut({ tabbed = true, platform = "macOS", readyState = "loading
     console,
   });
 
-  return {
-    get keydown() {
-      return keydown;
-    },
-    messages,
-    activate() {
-      if (load) load();
-      assert.equal(typeof timer, "function");
-      const callback = timer;
-      timer = undefined;
+  const run = () => vm.runInContext(source, context);
+  const runTimers = () => {
+    for (const [id, callback] of [...timers]) {
+      timers.delete(id);
       callback();
+    }
+  };
+  run();
+
+  return {
+    messages,
+    get keydownListenerCount() {
+      return listeners.keydown.length;
+    },
+    activate() {
+      const loadListeners = [...listeners.load];
+      listeners.load = listeners.load.filter((entry) => entry.options?.once !== true);
+      for (const { listener } of loadListeners) listener();
+      document.readyState = "complete";
+      runTimers();
+    },
+    reinject() {
+      run();
+      runTimers();
+    },
+    keydown(event) {
+      for (const { listener } of [...listeners.keydown]) listener(event);
     },
   };
 }
@@ -76,7 +96,6 @@ function keyboardEvent(overrides = {}) {
       this.defaultPrevented = true;
       calls.push("preventDefault");
     },
-    stopImmediatePropagation: () => calls.push("stopImmediatePropagation"),
     calls,
     ...overrides,
   };
@@ -84,11 +103,25 @@ function keyboardEvent(overrides = {}) {
 
 test("the close-tab handler registers late in the window bubble phase", () => {
   const shortcut = loadShortcut();
-  assert.equal(shortcut.keydown, undefined);
+  assert.equal(shortcut.keydownListenerCount, 0);
 
   shortcut.activate();
 
-  assert.equal(typeof shortcut.keydown, "function");
+  assert.equal(shortcut.keydownListenerCount, 1);
+});
+
+test("reinjection replaces the existing listener instead of stacking another", () => {
+  const shortcut = loadShortcut();
+  shortcut.activate();
+  assert.equal(shortcut.keydownListenerCount, 1);
+
+  shortcut.reinject();
+
+  assert.equal(shortcut.keydownListenerCount, 1);
+  const event = keyboardEvent({ metaKey: true });
+  shortcut.keydown(event);
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
 });
 
 test("Command+W closes the sender tab in tabbed PWAs on macOS", () => {

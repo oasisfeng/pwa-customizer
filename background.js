@@ -30,7 +30,9 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId).then(updateActionForTab).catch(() => {});
 });
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (changeInfo.url || changeInfo.status === "complete") updateActionForTab(tab);
+  if (changeInfo.url || changeInfo.status === "complete") {
+    updateActionForTab(tab).catch(() => {});
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -281,6 +283,10 @@ async function reconcile() {
     ]);
   }
 
+  // Dynamic registration only affects future document loads. Keep already-open
+  // PWA tabs protected after an extension reload/update or service-worker restart.
+  await injectCloseTabShortcutIntoExistingTabs(enabled);
+
   const oldRules = await chrome.declarativeNetRequest.getDynamicRules();
   const rules = enabled.flatMap((configuration) =>
     configuration.rules
@@ -294,6 +300,32 @@ async function reconcile() {
     removeRuleIds: oldRules.map((rule) => rule.id),
     addRules: rules.map((rule, index) => ({ ...rule, id: index + 1 })),
   });
+}
+
+async function injectCloseTabShortcutIntoExistingTabs(configurations) {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (!tab.id || !tab.url || !configurationForUrl(configurations, tab.url)) return;
+
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: true },
+          files: ["closeTabShortcut.js"],
+        });
+      } catch {
+        // A tab can disappear while reconciliation is running, or an inaccessible
+        // child frame can make all-frame injection fail. The top frame covers the
+        // normal PWA shortcut path, so use it as a best-effort fallback.
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ["closeTabShortcut.js"],
+          });
+        } catch {}
+      }
+    }),
+  );
 }
 
 async function updateActionForTab(tab) {
