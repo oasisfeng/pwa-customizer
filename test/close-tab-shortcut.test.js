@@ -5,7 +5,12 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../closeTabShortcut.js", import.meta.url), "utf8");
 
-function loadShortcut({ tabbed = true, platform = "macOS", readyState = "loading" } = {}) {
+function loadShortcut({
+  tabbed = true,
+  platform = "macOS",
+  readyState = "loading",
+  runtimeAvailable = true,
+} = {}) {
   const listeners = { load: [], keydown: [] };
   const timers = new Map();
   const messages = [];
@@ -41,14 +46,16 @@ function loadShortcut({ tabbed = true, platform = "macOS", readyState = "loading
       userAgentData: { platform },
       platform: platform === "macOS" ? "MacIntel" : platform,
     },
-    chrome: {
-      runtime: {
-        sendMessage(message) {
-          messages.push(message);
-          return Promise.resolve({ ok: true });
-        },
-      },
-    },
+    chrome: runtimeAvailable
+      ? {
+          runtime: {
+            sendMessage(message) {
+              messages.push(message);
+              return Promise.resolve({ ok: true });
+            },
+          },
+        }
+      : {},
     console,
   });
 
@@ -134,6 +141,17 @@ test("Command+W closes the sender tab in tabbed PWAs on macOS", () => {
   assert.deepEqual(event.calls, ["preventDefault"]);
   assert.equal(shortcut.messages.length, 1);
   assert.equal(shortcut.messages[0].type, "closeCurrentTab");
+});
+
+test("an invalidated extension context does not swallow Command+W", () => {
+  const shortcut = loadShortcut({ runtimeAvailable: false });
+  shortcut.activate();
+  const event = keyboardEvent({ metaKey: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, []);
+  assert.deepEqual(shortcut.messages, []);
 });
 
 test("a PWA that already prevented Command+W keeps control of the shortcut", () => {

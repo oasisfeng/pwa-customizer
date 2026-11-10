@@ -18,7 +18,11 @@ const DISABLED_TEXT = "Better PWAs: no active configuration";
 
 let reconciliation = Promise.resolve();
 
-chrome.runtime.onInstalled.addListener(() => queueReconciliation());
+chrome.runtime.onInstalled.addListener(() => {
+  queueReconciliation()
+    .then(reloadExistingTabbedPwaTabs)
+    .catch((error) => console.error(error));
+});
 chrome.runtime.onStartup.addListener(() => queueReconciliation());
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes[CONFIGURATIONS_KEY]) queueReconciliation();
@@ -283,10 +287,6 @@ async function reconcile() {
     ]);
   }
 
-  // Dynamic registration only affects future document loads. Keep already-open
-  // PWA tabs protected after an extension reload/update or service-worker restart.
-  await injectCloseTabShortcutIntoExistingTabs(enabled);
-
   const oldRules = await chrome.declarativeNetRequest.getDynamicRules();
   const rules = enabled.flatMap((configuration) =>
     configuration.rules
@@ -302,27 +302,28 @@ async function reconcile() {
   });
 }
 
-async function injectCloseTabShortcutIntoExistingTabs(configurations) {
+async function reloadExistingTabbedPwaTabs() {
+  const configurations = await getConfigurations();
   const tabs = await chrome.tabs.query({});
+
   await Promise.all(
     tabs.map(async (tab) => {
-      if (!tab.id || !tab.url || !configurationForUrl(configurations, tab.url)) return;
+      if (!tab.id || !tab.url) return;
+      const configuration = configurationForUrl(configurations, tab.url);
+      if (!configuration) return;
+      const hasAccess = await chrome.permissions.contains({
+        origins: permissionOrigins(configuration.matchPatterns),
+      });
+      if (!hasAccess) return;
 
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id, allFrames: true },
-          files: ["closeTabShortcut.js"],
+        const [{ result: isTabbedPwa } = {}] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => matchMedia("(display-mode: tabbed)").matches,
         });
+        if (isTabbedPwa) await chrome.tabs.reload(tab.id);
       } catch {
-        // A tab can disappear while reconciliation is running, or an inaccessible
-        // child frame can make all-frame injection fail. The top frame covers the
-        // normal PWA shortcut path, so use it as a best-effort fallback.
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            files: ["closeTabShortcut.js"],
-          });
-        } catch {}
+        // The tab can disappear while extension installation/update is settling.
       }
     }),
   );

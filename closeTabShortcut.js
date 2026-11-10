@@ -52,8 +52,14 @@
     // Respect a shortcut handler that ran earlier in the PWA.
     if (event.defaultPrevented) return;
 
+    // After an extension reload, an old content-script listener can briefly
+    // survive with an invalidated extension context. Do not swallow Cmd+W if
+    // there is no live runtime capable of closing the tab.
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime?.sendMessage) return;
+
     event.preventDefault();
-    chrome.runtime.sendMessage({ type: "closeCurrentTab" }).catch((error) => {
+    runtime.sendMessage({ type: "closeCurrentTab" }).catch((error) => {
       console.error("Better PWAs could not close the current tab:", error);
     });
   }
