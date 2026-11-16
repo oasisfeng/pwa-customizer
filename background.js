@@ -5,6 +5,7 @@ import {
   activeTabColorOverrideCss,
   configurationForUrl,
   createConfiguration,
+  newTabUrlForManifest,
   permissionOrigins,
   validateConfiguration,
 } from "./lib/config.js";
@@ -69,6 +70,8 @@ async function handleMessage(message, sender) {
     case "getConfigurationForPage":
       if (!sender.tab?.url) return { ok: false, error: "Page URL is unavailable." };
       return getConfigurationForPage(sender.tab.url, sender.tab.id);
+    case "openNewTab":
+      return openNewTab(sender);
     case "closeCurrentTab":
       return closeCurrentTab(sender);
     case "manifestInjected":
@@ -169,6 +172,28 @@ async function replaceConfigurations(configurations) {
     updatedAt: new Date().toISOString(),
   }));
   await chrome.storage.local.set({ [CONFIGURATIONS_KEY]: imported });
+  return { ok: true };
+}
+
+async function openNewTab(sender) {
+  const tab = sender.tab;
+  if (!tab?.url || tab.windowId == null) {
+    return { ok: false, error: "Current PWA tab is unavailable." };
+  }
+
+  const configuration = configurationForUrl(await getConfigurations(), tab.url);
+  if (!configuration) return { ok: false, error: "No active PWA configuration matches this tab." };
+
+  // Match Chromium's tabbed-PWA semantics: tab_strip.new_tab_button.url wins,
+  // otherwise the app's start_url is used.
+  const url = newTabUrlForManifest(configuration.manifest, tab.url);
+  if (!url) return { ok: false, error: "The PWA new-tab URL is invalid." };
+
+  await chrome.tabs.create({
+    windowId: tab.windowId,
+    url,
+    active: true,
+  });
   return { ok: true };
 }
 

@@ -108,7 +108,7 @@ function keyboardEvent(overrides = {}) {
   };
 }
 
-test("the close-tab handler registers late in the window bubble phase", () => {
+test("the tab shortcut handler registers late in the window bubble phase", () => {
   const shortcut = loadShortcut();
   assert.equal(shortcut.keydownListenerCount, 0);
 
@@ -129,6 +129,40 @@ test("reinjection replaces the existing listener instead of stacking another", (
   shortcut.keydown(event);
   assert.deepEqual(event.calls, ["preventDefault"]);
   assert.equal(shortcut.messages.length, 1);
+});
+
+test("Command+T opens a new tab in tabbed PWAs on macOS", () => {
+  const shortcut = loadShortcut();
+  shortcut.activate();
+  const event = keyboardEvent({ key: "t", metaKey: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
+  assert.equal(shortcut.messages[0].type, "openNewTab");
+});
+
+test("a PWA that already prevented Command+T keeps control of the shortcut", () => {
+  const shortcut = loadShortcut();
+  shortcut.activate();
+  const event = keyboardEvent({ key: "t", metaKey: true, defaultPrevented: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, []);
+  assert.deepEqual(shortcut.messages, []);
+});
+
+test("Command+Shift+T remains untouched", () => {
+  const shortcut = loadShortcut();
+  shortcut.activate();
+  const event = keyboardEvent({ key: "t", metaKey: true, shiftKey: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, []);
+  assert.deepEqual(shortcut.messages, []);
 });
 
 test("Command+W closes the sender tab in tabbed PWAs on macOS", () => {
@@ -185,6 +219,18 @@ test("the shortcut is untouched outside tabbed display mode", () => {
 
   assert.deepEqual(event.calls, []);
   assert.deepEqual(shortcut.messages, []);
+});
+
+test("Ctrl+T opens a new tab off macOS", () => {
+  const shortcut = loadShortcut({ platform: "Windows" });
+  shortcut.activate();
+  const event = keyboardEvent({ key: "t", ctrlKey: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
+  assert.equal(shortcut.messages[0].type, "openNewTab");
 });
 
 test("Ctrl+W is used as the close-tab shortcut off macOS", () => {

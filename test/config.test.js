@@ -8,6 +8,7 @@ import {
   derivedActiveTabColor,
   editableHexColor,
   hasSuitableInstallIcon,
+  newTabUrlForManifest,
   patternMatchesUrl,
   permissionOrigins,
   resolvedActiveTabColor,
@@ -41,6 +42,31 @@ test("wildcard schemes expand into requestable optional origins", () => {
     "https://example.com/*",
     "https://other.example/app/*",
   ]);
+});
+
+test("tabbed PWA new-tab URLs prefer tab_strip and fall back to start_url", () => {
+  assert.equal(
+    newTabUrlForManifest(
+      {
+        start_url: "/home",
+        tab_strip: { new_tab_button: { url: "/compose" } },
+      },
+      "https://example.com/inbox/thread/1",
+    ),
+    "https://example.com/compose",
+  );
+  assert.equal(
+    newTabUrlForManifest({ start_url: "/home" }, "https://example.com/inbox/thread/1"),
+    "https://example.com/home",
+  );
+  assert.equal(
+    newTabUrlForManifest({}, "https://example.com/inbox/thread/1"),
+    "https://example.com/inbox/thread/1",
+  );
+  assert.equal(
+    newTabUrlForManifest({ start_url: "chrome://settings/" }, "https://example.com/"),
+    null,
+  );
 });
 
 test("configuration lookup chooses the first enabled match", () => {
