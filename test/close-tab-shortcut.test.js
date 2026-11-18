@@ -154,10 +154,27 @@ test("a PWA that already prevented Command+T keeps control of the shortcut", () 
   assert.deepEqual(shortcut.messages, []);
 });
 
-test("Command+Shift+T remains untouched", () => {
+test("Command+Shift+T reopens the last closed tab in the current PWA window", () => {
   const shortcut = loadShortcut();
   shortcut.activate();
   const event = keyboardEvent({ key: "t", metaKey: true, shiftKey: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
+  assert.equal(shortcut.messages[0].type, "reopenClosedTab");
+});
+
+test("a PWA that already prevented Command+Shift+T keeps control of the shortcut", () => {
+  const shortcut = loadShortcut();
+  shortcut.activate();
+  const event = keyboardEvent({
+    key: "t",
+    metaKey: true,
+    shiftKey: true,
+    defaultPrevented: true,
+  });
 
   shortcut.keydown(event);
 
@@ -231,6 +248,18 @@ test("Ctrl+T opens a new tab off macOS", () => {
   assert.deepEqual(event.calls, ["preventDefault"]);
   assert.equal(shortcut.messages.length, 1);
   assert.equal(shortcut.messages[0].type, "openNewTab");
+});
+
+test("Ctrl+Shift+T reopens the last closed tab off macOS", () => {
+  const shortcut = loadShortcut({ platform: "Windows" });
+  shortcut.activate();
+  const event = keyboardEvent({ key: "t", ctrlKey: true, shiftKey: true });
+
+  shortcut.keydown(event);
+
+  assert.deepEqual(event.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.length, 1);
+  assert.equal(shortcut.messages[0].type, "reopenClosedTab");
 });
 
 test("Ctrl+W is used as the close-tab shortcut off macOS", () => {

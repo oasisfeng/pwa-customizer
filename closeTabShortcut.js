@@ -39,13 +39,22 @@
     const primaryModifier = mac ? event.metaKey : event.ctrlKey;
     const otherPrimaryModifier = mac ? event.ctrlKey : event.metaKey;
     const key = event.key.toLowerCase();
-    if (
-      !primaryModifier ||
-      otherPrimaryModifier ||
-      event.altKey ||
-      event.shiftKey ||
-      !["t", "w"].includes(key)
-    ) {
+    if (!primaryModifier || otherPrimaryModifier || event.altKey || !["t", "w"].includes(key)) {
+      return;
+    }
+
+    let type;
+    let action;
+    if (key === "t" && event.shiftKey) {
+      type = "reopenClosedTab";
+      action = "reopen the last closed";
+    } else if (key === "t" && !event.shiftKey) {
+      type = "openNewTab";
+      action = "open a new";
+    } else if (key === "w" && !event.shiftKey) {
+      type = "closeCurrentTab";
+      action = "close the current";
+    } else {
       return;
     }
 
@@ -59,16 +68,15 @@
     if (!runtime?.sendMessage) return;
 
     event.preventDefault();
-    const type = key === "t" ? "openNewTab" : "closeCurrentTab";
     runtime
       .sendMessage({ type })
       .then((response) => {
         if (response?.ok === false) {
-          console.error(`Better PWAs could not ${key === "t" ? "open a new" : "close the current"} tab:`, response.error);
+          console.error(`Better PWAs could not ${action} tab:`, response.error);
         }
       })
       .catch((error) => {
-        console.error(`Better PWAs could not ${key === "t" ? "open a new" : "close the current"} tab:`, error);
+        console.error(`Better PWAs could not ${action} tab:`, error);
       });
   }
 })();

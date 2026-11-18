@@ -18,9 +18,10 @@ With a profile, you can:
   fullscreen app;
 - request enhanced modes such as a tabbed app or window-controls overlay, with a standard display
   mode as the fallback;
-- make Command+W on macOS (Ctrl+W elsewhere) close only the active tab in tabbed app windows,
-  instead of closing the entire PWA, and make Command+T (Ctrl+T elsewhere) open a new app tab using
-  the manifest's tab-strip new-tab URL or start URL, while preserving shortcuts the app itself handles;
+- add browser-like tab shortcuts to tabbed app windows: Command+W on macOS (Ctrl+W elsewhere)
+  closes only the active tab, Command+T (Ctrl+T elsewhere) opens a new app tab using the manifest's
+  tab-strip new-tab URL or start URL, and Command+Shift+T (Ctrl+Shift+T elsewhere) reopens the most
+  recently closed tab from that PWA window, while preserving shortcuts the app itself handles;
 - set the manifest theme color with a color picker;
 - set the active-tab color manually, or derive one from the theme color using Chromium's contrast
   behavior;

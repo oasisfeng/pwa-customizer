@@ -16,8 +16,12 @@ const ENABLED_ICON = "images/icon48.png";
 const DISABLED_ICON = "images/iconDisabled48.png";
 const ENABLED_TEXT = "Better PWAs: replacement manifest active";
 const DISABLED_TEXT = "Better PWAs: no active configuration";
+const TAB_SNAPSHOT_PREFIX = "better-pwas-tab:";
+const CLOSED_TABS_PREFIX = "better-pwas-closed-tabs:";
+const MAX_CLOSED_TABS_PER_WINDOW = 25;
 
 let reconciliation = Promise.resolve();
+let tabHistoryMutation = Promise.resolve();
 
 chrome.runtime.onInstalled.addListener(() => {
   queueReconciliation()
@@ -31,13 +35,32 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
+chrome.tabs.onCreated.addListener((tab) => {
+  saveTabSnapshot(tab).catch(() => {});
+});
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  chrome.tabs.get(tabId).then(updateActionForTab).catch(() => {});
+  chrome.tabs
+    .get(tabId)
+    .then((tab) => Promise.all([saveTabSnapshot(tab), updateActionForTab(tab)]))
+    .catch(() => {});
 });
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+  saveTabSnapshot(tab).catch(() => {});
   if (changeInfo.url || changeInfo.status === "complete") {
     updateActionForTab(tab).catch(() => {});
   }
+});
+chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+  updateTabSnapshotPosition(tabId, moveInfo.windowId, moveInfo.toIndex).catch(() => {});
+});
+chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+  updateTabSnapshotPosition(tabId, attachInfo.newWindowId, attachInfo.newPosition).catch(() => {});
+});
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  queueTabHistoryMutation(() => recordRemovedTab(tabId, removeInfo)).catch(() => {});
+});
+chrome.windows.onRemoved.addListener((windowId) => {
+  chrome.storage.session.remove(closedTabsKey(windowId)).catch(() => {});
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -48,6 +71,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 queueReconciliation();
+seedTabSnapshots().catch(() => {});
 
 async function handleMessage(message, sender) {
   switch (message?.type) {
@@ -72,6 +96,8 @@ async function handleMessage(message, sender) {
       return getConfigurationForPage(sender.tab.url, sender.tab.id);
     case "openNewTab":
       return openNewTab(sender);
+    case "reopenClosedTab":
+      return reopenClosedTab(sender);
     case "closeCurrentTab":
       return closeCurrentTab(sender);
     case "manifestInjected":
@@ -175,6 +201,109 @@ async function replaceConfigurations(configurations) {
   return { ok: true };
 }
 
+function tabSnapshotKey(tabId) {
+  return `${TAB_SNAPSHOT_PREFIX}${tabId}`;
+}
+
+function closedTabsKey(windowId) {
+  return `${CLOSED_TABS_PREFIX}${windowId}`;
+}
+
+function queueTabHistoryMutation(task) {
+  const result = tabHistoryMutation.then(task);
+  tabHistoryMutation = result.catch((error) => console.error(error));
+  return result;
+}
+
+async function seedTabSnapshots() {
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(tabs.map((tab) => saveTabSnapshot(tab)));
+}
+
+async function saveTabSnapshot(tab) {
+  const url = tab?.url ?? tab?.pendingUrl;
+  if (tab?.id == null || tab.windowId == null || !url) return;
+
+  await chrome.storage.session.set({
+    [tabSnapshotKey(tab.id)]: {
+      windowId: tab.windowId,
+      index: tab.index,
+      url,
+    },
+  });
+}
+
+async function updateTabSnapshotPosition(tabId, windowId, index) {
+  const key = tabSnapshotKey(tabId);
+  const stored = await chrome.storage.session.get(key);
+  const snapshot = stored[key];
+  if (!snapshot) {
+    const tab = await chrome.tabs.get(tabId);
+    await saveTabSnapshot(tab);
+    return;
+  }
+
+  await chrome.storage.session.set({
+    [key]: {
+      ...snapshot,
+      windowId,
+      index,
+    },
+  });
+}
+
+async function recordRemovedTab(tabId, removeInfo) {
+  const key = tabSnapshotKey(tabId);
+  const stored = await chrome.storage.session.get(key);
+  const snapshot = stored[key];
+  await chrome.storage.session.remove(key);
+
+  if (removeInfo.isWindowClosing || !snapshot || snapshot.windowId !== removeInfo.windowId) return;
+
+  const stackKey = closedTabsKey(removeInfo.windowId);
+  const stackState = await chrome.storage.session.get(stackKey);
+  const stack = Array.isArray(stackState[stackKey]) ? stackState[stackKey] : [];
+  stack.unshift(snapshot);
+  await chrome.storage.session.set({
+    [stackKey]: stack.slice(0, MAX_CLOSED_TABS_PER_WINDOW),
+  });
+}
+
+async function reopenClosedTab(sender) {
+  const tab = sender.tab;
+  if (tab?.windowId == null) {
+    return { ok: false, error: "Current PWA window is unavailable." };
+  }
+
+  return queueTabHistoryMutation(async () => {
+    const stackKey = closedTabsKey(tab.windowId);
+    const stackState = await chrome.storage.session.get(stackKey);
+    const stack = Array.isArray(stackState[stackKey]) ? stackState[stackKey] : [];
+    const closedTab = stack[0];
+    if (!closedTab?.url) return { ok: true, reopened: false };
+
+    const openTabs = await chrome.tabs.query({ windowId: tab.windowId });
+    const index = Number.isInteger(closedTab.index)
+      ? Math.min(Math.max(closedTab.index, 0), openTabs.length)
+      : openTabs.length;
+
+    await chrome.tabs.create({
+      windowId: tab.windowId,
+      index,
+      url: closedTab.url,
+      active: true,
+    });
+
+    const remaining = stack.slice(1);
+    if (remaining.length) {
+      await chrome.storage.session.set({ [stackKey]: remaining });
+    } else {
+      await chrome.storage.session.remove(stackKey);
+    }
+    return { ok: true, reopened: true };
+  });
+}
+
 async function openNewTab(sender) {
   const tab = sender.tab;
   if (!tab?.url || tab.windowId == null) {
@@ -199,6 +328,7 @@ async function openNewTab(sender) {
 
 async function closeCurrentTab(sender) {
   if (!sender.tab?.id) return { ok: false, error: "Current tab is unavailable." };
+  await saveTabSnapshot(sender.tab);
   await chrome.tabs.remove(sender.tab.id);
   return { ok: true };
 }
