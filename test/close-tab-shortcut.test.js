@@ -108,9 +108,14 @@ function keyboardEvent(overrides = {}) {
   };
 }
 
-test("the tab shortcut handler registers late in the window bubble phase", () => {
+test("a loading PWA tab is protected immediately and swaps to one steady-state listener", () => {
   const shortcut = loadShortcut();
-  assert.equal(shortcut.keydownListenerCount, 0);
+  assert.equal(shortcut.keydownListenerCount, 1);
+
+  const earlyEvent = keyboardEvent({ metaKey: true });
+  shortcut.keydown(earlyEvent);
+  assert.deepEqual(earlyEvent.calls, ["preventDefault"]);
+  assert.equal(shortcut.messages.at(-1)?.type, "closeCurrentTab");
 
   shortcut.activate();
 

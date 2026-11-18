@@ -2,31 +2,44 @@
   const stateKey = "__betterPwasTabShortcuts";
 
   // If this script is reinjected into the same live extension world, replace our
-  // previous listener instead of stacking another one.
+  // previous listeners instead of stacking another set.
   const previous = globalThis[stateKey];
   if (previous?.loadListener) window.removeEventListener("load", previous.loadListener);
   if (previous?.timer != null) clearTimeout(previous.timer);
-  if (previous?.listener) window.removeEventListener("keydown", previous.listener);
+  if (previous?.earlyListener) window.removeEventListener("keydown", previous.earlyListener);
+  if (previous?.lateListener) window.removeEventListener("keydown", previous.lateListener);
 
   const state = {};
   globalThis[stateKey] = state;
 
-  const scheduleRegistration = () => {
-    state.timer = setTimeout(() => {
-      state.timer = null;
-      state.listener = handleTabbedPwaShortcut;
-      window.addEventListener("keydown", state.listener);
-    }, 0);
+  const registerLateListener = () => {
+    state.lateListener = handleTabbedPwaShortcut;
+    window.addEventListener("keydown", state.lateListener);
   };
 
-  // Register late in the bubble phase so the PWA gets first chance to claim
-  // Command/Ctrl+W or Command/Ctrl+T itself.
   if (document.readyState === "complete") {
-    scheduleRegistration();
+    // Existing app listeners are already registered, so app-first ordering is
+    // preserved without introducing a post-injection shortcut gap.
+    registerLateListener();
   } else {
+    // A newly-created PWA tab can receive Command/Ctrl+W before load. Protect
+    // that startup interval immediately; otherwise Chromium falls back to its
+    // native Close Window command and closes the whole PWA.
+    state.earlyListener = handleTabbedPwaShortcut;
+    window.addEventListener("keydown", state.earlyListener);
+
     state.loadListener = () => {
       state.loadListener = null;
-      scheduleRegistration();
+      state.timer = setTimeout(() => {
+        state.timer = null;
+
+        // Add the steady-state listener only after normal load handlers have had
+        // a chance to register their own window-level shortcuts. Remove and add
+        // within one task, so no keyboard event can land in between.
+        window.removeEventListener("keydown", state.earlyListener);
+        state.earlyListener = null;
+        registerLateListener();
+      }, 0);
     };
     window.addEventListener("load", state.loadListener, { once: true });
   }
