@@ -19,11 +19,15 @@ const DISABLED_TEXT = "Better PWAs: no active configuration";
 const TAB_SNAPSHOT_PREFIX = "better-pwas-tab:";
 const CLOSED_TABS_PREFIX = "better-pwas-closed-tabs:";
 const MAX_CLOSED_TABS_PER_WINDOW = 25;
+const DIAGNOSTICS_KEY = "better-pwas-diagnostics";
+const MAX_DIAGNOSTIC_EVENTS = 100;
 
 let reconciliation = Promise.resolve();
 let tabHistoryMutation = Promise.resolve();
+let diagnosticMutation = Promise.resolve();
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  logDiagnostic("extension-installed", { reason: details.reason });
   queueReconciliation()
     .then(reloadExistingTabbedPwaTabs)
     .catch((error) => console.error(error));
@@ -38,7 +42,8 @@ chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 chrome.tabs.onCreated.addListener((tab) => {
   saveTabSnapshot(tab).catch(() => {});
 });
-chrome.tabs.onActivated.addListener(({ tabId }) => {
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  logDiagnostic("tab-activated", { tabId, windowId });
   chrome.tabs
     .get(tabId)
     .then((tab) => Promise.all([saveTabSnapshot(tab), updateActionForTab(tab)]))
@@ -57,9 +62,18 @@ chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
   updateTabSnapshotPosition(tabId, attachInfo.newWindowId, attachInfo.newPosition).catch(() => {});
 });
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  logDiagnostic("tab-removed", {
+    tabId,
+    windowId: removeInfo.windowId,
+    isWindowClosing: removeInfo.isWindowClosing,
+  });
   queueTabHistoryMutation(() => recordRemovedTab(tabId, removeInfo)).catch(() => {});
 });
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  logDiagnostic("window-focus-changed", { windowId });
+});
 chrome.windows.onRemoved.addListener((windowId) => {
+  logDiagnostic("window-removed", { windowId });
   chrome.storage.session.remove(closedTabsKey(windowId)).catch(() => {});
 });
 
@@ -215,6 +229,26 @@ function queueTabHistoryMutation(task) {
   return result;
 }
 
+function logDiagnostic(event, details = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    event,
+    ...details,
+  };
+  console.info("[Better PWAs diagnostic]", entry);
+
+  const result = diagnosticMutation.then(async () => {
+    const stored = await chrome.storage.local.get(DIAGNOSTICS_KEY);
+    const events = Array.isArray(stored[DIAGNOSTICS_KEY]) ? stored[DIAGNOSTICS_KEY] : [];
+    events.push(entry);
+    await chrome.storage.local.set({
+      [DIAGNOSTICS_KEY]: events.slice(-MAX_DIAGNOSTIC_EVENTS),
+    });
+  });
+  diagnosticMutation = result.catch(() => {});
+  return result;
+}
+
 async function seedTabSnapshots() {
   const tabs = await chrome.tabs.query({});
   await Promise.all(tabs.map((tab) => saveTabSnapshot(tab)));
@@ -328,6 +362,10 @@ async function openNewTab(sender) {
 
 async function closeCurrentTab(sender) {
   if (!sender.tab?.id) return { ok: false, error: "Current tab is unavailable." };
+  await logDiagnostic("extension-close-tab-request", {
+    tabId: sender.tab.id,
+    windowId: sender.tab.windowId,
+  });
   await saveTabSnapshot(sender.tab);
   await chrome.tabs.remove(sender.tab.id);
   return { ok: true };
@@ -476,7 +514,13 @@ async function reloadExistingTabbedPwaTabs() {
           target: { tabId: tab.id },
           func: () => matchMedia("(display-mode: tabbed)").matches,
         });
-        if (isTabbedPwa) await chrome.tabs.reload(tab.id);
+        if (isTabbedPwa) {
+          await logDiagnostic("extension-reload-tab-on-install", {
+            tabId: tab.id,
+            windowId: tab.windowId,
+          });
+          await chrome.tabs.reload(tab.id);
+        }
       } catch {
         // The tab can disappear while extension installation/update is settling.
       }
@@ -497,9 +541,34 @@ async function updateActionForTab(tab) {
   );
 }
 
+function actionCall(callbackApi, operation, tabId) {
+  return new Promise((resolve, reject) => {
+    callbackApi(() => {
+      const error = chrome.runtime.lastError;
+      if (!error) {
+        resolve();
+        return;
+      }
+
+      // Tab lifecycle races are expected when a tab/window disappears between
+      // onActivated/onUpdated and the per-tab action update.
+      if (error.message?.startsWith("No tab with id")) {
+        logDiagnostic("action-missing-tab", { operation, tabId });
+        resolve();
+        return;
+      }
+      reject(new Error(error.message));
+    });
+  });
+}
+
 function setAction(icon, title, tabId) {
   return Promise.all([
-    chrome.action.setIcon({ path: { 48: icon }, tabId }),
-    chrome.action.setTitle({ title, tabId }),
+    actionCall(
+      (done) => chrome.action.setIcon({ path: { 48: icon }, tabId }, done),
+      "setIcon",
+      tabId,
+    ),
+    actionCall((done) => chrome.action.setTitle({ title, tabId }, done), "setTitle", tabId),
   ]);
 }
